@@ -282,10 +282,12 @@ void Connection::CreateColumnsFromResultSet(oracle::occi::ResultSet* rs, std::ve
         break;
       //Use OCI_TYPECODE from oro.h because occiCommon.h does not re-export these in its TypeCode enum
       case OCI_TYPECODE_TIMESTAMP:
-      case OCI_TYPECODE_TIMESTAMP_TZ: //Timezone
-      case OCI_TYPECODE_TIMESTAMP_LTZ: //Local Timezone
         col->type = VALUE_TYPE_TIMESTAMP;
         break;
+      case OCI_TYPECODE_TIMESTAMP_TZ: //Timezone
+      case OCI_TYPECODE_TIMESTAMP_LTZ: //Local Timezone
+		col->type = VALUE_TYPE_TIMESTAMP_TZ; // TODO
+		break;
       case oracle::occi::OCCI_TYPECODE_BLOB:
         col->type = VALUE_TYPE_BLOB;
         break;
@@ -318,6 +320,7 @@ row_t* Connection::CreateRowFromCurrentResultSetRow(oracle::occi::ResultSet* rs,
           row->values.push_back(new oracle::occi::Date(rs->getDate(colIndex)));
           break;
         case VALUE_TYPE_TIMESTAMP:
+        case VALUE_TYPE_TIMESTAMP_TZ:
           row->values.push_back(new oracle::occi::Timestamp(rs->getTimestamp(colIndex)));
           break;
         case VALUE_TYPE_CLOB:
@@ -497,12 +500,17 @@ Local<Date> OracleDateToV8Date(oracle::occi::Date* d) {
 	return date;
 }
 
-Local<Date> OracleTimestampToV8Date(oracle::occi::Timestamp* d) {
-	int year;
+Local<Date> OracleTimestampToV8Date(oracle::occi::Timestamp* d, bool hasTimezone) {
+	int year, tzhour, tzmin;
 	unsigned int month, day, hour, min, sec, fs, ms;
 	d->getDate(year, month, day);
 	d->getTime(hour, min, sec, fs);
 	Local<Date> date = Date::Cast(*Date::New(0.0));
+
+	if (hasTimezone) {
+		d->getTimeZoneOffset(tzhour, tzmin);
+		// Do fancy stuff here to calculate UTC time
+	}
 	//occi always returns nanoseconds, regardless of precision set on timestamp column
 	ms = (fs / 1000000.0) + 0.5; // add 0.5 to round to nearest millisecond
 
@@ -549,8 +557,17 @@ Local<Object> Connection::CreateV8ObjectFromRow(std::vector<column_t*> columns, 
           break;
         case VALUE_TYPE_TIMESTAMP:
           {
+		    bool hasTimezone = false;
             oracle::occi::Timestamp* v = (oracle::occi::Timestamp*)val;
-            obj->Set(String::New(col->name.c_str()), OracleTimestampToV8Date(v));
+            obj->Set(String::New(col->name.c_str()), OracleTimestampToV8Date(v, hasTimezone));
+            delete v;
+          }
+          break;
+        case VALUE_TYPE_TIMESTAMP_TZ:
+          {
+		    bool hasTimezone = true;
+            oracle::occi::Timestamp* v = (oracle::occi::Timestamp*)val;
+            obj->Set(String::New(col->name.c_str()), OracleTimestampToV8Date(v, hasTimezone));
             delete v;
           }
           break;
@@ -725,8 +742,11 @@ void Connection::EIO_AfterExecute(uv_work_t* req, int status) {
             obj->Set(String::New(returnParam.c_str()), OracleDateToV8Date(&output->dateVal));
             break;
           case OutParam::OCCITIMESTAMP:
-            obj->Set(String::New(returnParam.c_str()), OracleTimestampToV8Date(&output->timestampVal));
-            break;
+		    {
+				bool hasTimezone = false;
+				obj->Set(String::New(returnParam.c_str()), OracleTimestampToV8Date(&output->timestampVal, hasTimezone));
+				break;
+			}
           case OutParam::OCCINUMBER:
             obj->Set(String::New(returnParam.c_str()), Number::New(output->numberVal));
             break;
